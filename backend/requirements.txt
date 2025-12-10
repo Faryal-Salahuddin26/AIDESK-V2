@@ -1,0 +1,29 @@
+fastapi==0.115.0
+uvicorn[standard]==0.32.0
+pydantic==2.9.2
+pydantic-settings==2.5.0
+python-multipart==0.0.9
+requests==2.32.3
+python-dotenv==1.0.1
+apscheduler==3.10.4
+sqlalchemy==2.0.35
+beautifulsoup4==4.12.3
+lxml==5.3.0
+feedparser==6.0.11
+python-dateutil==2.9.0
+
+# OpenAI Agents SDK 2025
+# Install using one of these commands:
+# pip install openai-agents
+# OR
+# pip install agents
+# 
+# The package must support:
+# - from agents.agent import Agent
+# - from agents.run import AgentRunner
+# - from agents.tool import function_tool
+#
+# IMPORTANT: Do NOT use:
+# - ChatCompletion API
+# - Swarm
+# - Deprecated assistant API
