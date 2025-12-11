@@ -2,10 +2,13 @@
 import asyncio
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from app.services.news_service import NewsService
-from app.services.storage_service import StorageService
 from app.config import settings
 import logging
+import sys
+from pathlib import Path
+
+# Add parent directory to path to import main module functions
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 logger = logging.getLogger(__name__)
 
@@ -13,78 +16,24 @@ scheduler = AsyncIOScheduler()
 
 
 async def collect_and_save_news():
-    """Task to collect and save news articles automatically."""
+    """
+    Scheduled task that runs the master pipeline every 10 minutes.
+    This calls the process_all_news() function from main.py
+    """
     try:
-        logger.info("🤖 Starting automatic news collection...")
+        logger.info("🤖 Starting scheduled news collection pipeline...")
         
-        news_service = NewsService()
-        storage_service = StorageService()
+        # Import the master pipeline function from main.py
+        from main import process_all_news
         
-        # Step 1: Collect news from real sources
-        raw_articles = await news_service.collect_news(
+        # Run the master pipeline
+        result = await process_all_news(
             topic="AI news latest",
-            max_articles=15  # Collect more to have variety
+            max_articles=20
         )
         
-        if not raw_articles:
-            logger.warning("No articles collected from sources.")
-            return
+        logger.info(f"🎉 Scheduled pipeline complete! Processed {result['count']} articles, saved {result['saved']}, errors: {len(result.get('errors', []))}")
         
-        logger.info(f"📰 Collected {len(raw_articles)} articles from sources")
-        
-        # Step 2: Generate summaries for each article
-        summarized_articles = await news_service.generate_summaries(raw_articles)
-        logger.info(f"📝 Generated summaries for {len(summarized_articles)} articles")
-        
-        # Step 3: Generate SEO and save each article
-        saved_count = 0
-        updated_count = 0
-        for article in summarized_articles:
-            try:
-                # Generate SEO metadata
-                seo_data = await news_service.generate_seo(
-                    title=article.get("title", ""),
-                    content=article.get("long_summary", "") or article.get("description", "")
-                )
-                
-                # Combine all data
-                from app.schemas.article import ArticleCreate
-                final_article = ArticleCreate(
-                    title=article.get("title", "Untitled"),
-                    url=article.get("url", ""),
-                    source=article.get("source", "unknown"),
-                    published_at=article.get("published_at"),
-                    short_summary=article.get("short_summary", "")[:200] if article.get("short_summary") else "",
-                    long_summary=article.get("long_summary", ""),
-                    meta_title=seo_data.get("meta_title", article.get("title", "")),
-                    meta_description=seo_data.get("meta_description", article.get("short_summary", "")),
-                    slug=seo_data.get("slug", ""),
-                    tags=seo_data.get("tags", []),
-                    thumbnail=article.get("thumbnail"),  # Include thumbnail from YouTube/other sources
-                    description=article.get("description", "")  # Include description
-                )
-                
-                # Check if article exists before saving
-                file_path = storage_service.storage_path / f"{final_article.slug}.json"
-                is_update = file_path.exists()
-                
-                # Save article (will update if duplicate slug exists)
-                await storage_service.save_article(final_article)
-                
-                if is_update:
-                    updated_count += 1
-                    logger.info(f"🔄 Updated: {article.get('title', 'unknown')[:50]}...")
-                else:
-                    saved_count += 1
-                    logger.info(f"✅ Saved: {article.get('title', 'unknown')[:50]}...")
-                
-            except Exception as e:
-                logger.error(f"❌ Error processing article {article.get('title', 'unknown')}: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
-        
-        logger.info(f"🎉 Completed! Saved {saved_count} new articles, updated {updated_count} existing. Total processed: {len(raw_articles)}")
     except Exception as e:
         logger.error(f"❌ Error in scheduled task: {e}", exc_info=True)
 

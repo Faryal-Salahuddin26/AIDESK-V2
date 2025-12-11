@@ -9,13 +9,46 @@ if (!secret) {
   console.warn("⚠️ Warning: NEXTAUTH_SECRET or JWT_SECRET not set. Authentication may not work properly.")
 }
 
+// Get the base URL for callbacks
+const getBaseUrl = () => {
+  if (process.env.NEXTAUTH_URL) {
+    return process.env.NEXTAUTH_URL;
+  }
+  if (process.env.VERCEL_URL) {
+    return `https://${process.env.VERCEL_URL}`;
+  }
+  return "http://localhost:3000";
+};
+
+const baseUrl = getBaseUrl();
+
+// Log configuration for debugging
+if (process.env.NODE_ENV === "development") {
+  console.log("🔍 NextAuth Configuration:");
+  console.log("  Base URL:", baseUrl);
+  console.log("  NEXTAUTH_URL env:", process.env.NEXTAUTH_URL || "NOT SET");
+  console.log("  Expected callback URL:", `${baseUrl}/api/auth/callback/google`);
+  console.log("  Google Client ID:", process.env.GOOGLE_CLIENT_ID ? `${process.env.GOOGLE_CLIENT_ID.substring(0, 20)}...` : "NOT SET");
+  console.log("  Google Client Secret:", process.env.GOOGLE_CLIENT_SECRET ? "SET" : "NOT SET");
+  console.log("");
+  console.log("⚠️  IMPORTANT: Add this exact URL to Google Cloud Console:");
+  console.log(`   ${baseUrl}/api/auth/callback/google`);
+  console.log("");
+}
+
 export const authOptions: NextAuthOptions = {
   debug: process.env.NODE_ENV === "development",
   providers: [
     GoogleProvider({
       clientId: process.env.GOOGLE_CLIENT_ID || "",
       clientSecret: process.env.GOOGLE_CLIENT_SECRET || "",
-      allowDangerousEmailAccountLinking: true,
+      authorization: {
+        params: {
+          prompt: "consent",
+          access_type: "offline",
+          response_type: "code",
+        },
+      },
     }),
     // Apple Provider - requires Apple Developer account
     // Configure when you have Apple credentials
@@ -43,8 +76,6 @@ export const authOptions: NextAuthOptions = {
           return null
         }
 
-        // TODO: Replace with actual API call to your backend
-        // For now, this is a placeholder
         try {
           const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"
           const response = await fetch(`${apiUrl}/api/auth/login`, {
@@ -60,22 +91,25 @@ export const authOptions: NextAuthOptions = {
             const user = await response.json()
             return {
               id: user.id || credentials.email,
-              email: credentials.email,
-              name: user.name || credentials.email,
+              email: user.email || credentials.email,
+              name: user.name || user.email?.split("@")[0] || credentials.email,
             }
+          } else {
+            const errorData = await response.json().catch(() => ({ detail: "Login failed" }))
+            console.error("Login error:", errorData.detail || "Invalid credentials")
+            return null
           }
         } catch (error) {
           console.error("Auth error:", error)
+          return null
         }
-
-        return null
       }
     })
   ],
   pages: {
     signIn: "/login",
     signOut: "/",
-    error: "/login",
+    error: "/auth/error",
   },
   callbacks: {
     async jwt({ token, user, account }) {
@@ -100,23 +134,16 @@ export const authOptions: NextAuthOptions = {
   },
   secret: secret || "your-secret-key-change-in-production",
   trustHost: true, // Required for NextAuth v5
+  // Explicitly set the base URL for callbacks
+  basePath: "/api/auth",
+  // Ensure we use the correct base URL
+  url: baseUrl,
 }
 
-// Initialize NextAuth handler
-let handler: ReturnType<typeof NextAuth>
+// NextAuth v5 beta - export handler directly
+const { handlers } = NextAuth(authOptions)
 
-try {
-  handler = NextAuth(authOptions)
-} catch (error) {
-  console.error("Failed to initialize NextAuth:", error)
-  // Create a fallback handler that returns proper error JSON
-  handler = NextAuth({
-    ...authOptions,
-    providers: [], // Empty providers as fallback
-  })
-}
-
-export { handler as GET, handler as POST }
+export const { GET, POST } = handlers
 
 // Export authOptions for use in other files if needed
 export { authOptions }

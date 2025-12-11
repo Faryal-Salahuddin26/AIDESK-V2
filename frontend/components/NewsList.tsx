@@ -29,9 +29,8 @@ export function NewsList({ initialArticles = [] }: NewsListProps) {
     const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
     
     try {
-      // Try new API endpoint
-      let response = await fetch(
-        `${apiUrl}/api/v1/list-news?page=1&limit=30`,
+      const response = await fetch(
+        `${apiUrl}/list-news?page=1&limit=30`,
         {
           cache: 'no-store',
           headers: {
@@ -40,20 +39,6 @@ export function NewsList({ initialArticles = [] }: NewsListProps) {
           },
         }
       );
-      
-      // Try fallback endpoint if first fails
-      if (!response.ok) {
-        response = await fetch(
-          `${apiUrl}/list-news`,
-          {
-            cache: 'no-store',
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
-          }
-        );
-      }
       
       if (!response.ok) {
         throw new Error(`API returned ${response.status}`);

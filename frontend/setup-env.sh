@@ -21,7 +21,7 @@ echo ""
 echo "✅ Setup complete!"
 echo ""
 echo "Next steps:"
-echo "1. Make sure backend is running: cd ../backend && uvicorn app.main:app --reload --port 8000"
+echo "1. Make sure backend is running: cd ../backend && uvicorn main:app --reload --port 8000"
 echo "2. Restart frontend: npm run dev"
 echo "3. Visit http://localhost:3000"
 

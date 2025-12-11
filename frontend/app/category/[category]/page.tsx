@@ -73,35 +73,19 @@ async function getArticles(categorySlug: string) {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   
   try {
-        const response = await fetch(
-          `${apiUrl}/api/v1/list-news?page=1&limit=50`,
-          {
-            headers: {
-              'Content-Type': 'application/json',
-              'Accept': 'application/json',
-            },
-            cache: 'no-store',
-          }
-        );
-        
-        if (!response.ok) {
-          const fallbackResponse = await fetch(
-            `${apiUrl}/list-news?page=1&limit=50`,
-            {
-              headers: {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-              },
-              cache: 'no-store',
-            }
-          );
-      
-      if (fallbackResponse.ok) {
-        const fallbackData = await fallbackResponse.json();
-        const articles = fallbackData.articles || fallbackData || [];
-        return filterArticlesByCategory(articles, categorySlug);
+    const response = await fetch(
+      `${apiUrl}/list-news?page=1&limit=50`,
+      {
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+        },
+        cache: 'no-store',
       }
-      
+    );
+    
+    if (!response.ok) {
+      console.error(`❌ API Error: ${response.status} ${response.statusText}`);
       return [];
     }
     

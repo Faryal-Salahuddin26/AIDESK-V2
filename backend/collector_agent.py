@@ -1,804 +1,600 @@
+"""
+Collector Agent - Fetches articles from multiple sources and normalizes them.
+Sources: YouTube (transcripts/posts), Forbes, Web Search (Bing/Google)
+"""
 from agents.agent import Agent
 from agents.run import AgentRunner
-from agents.tool import function_tool
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import re
 import requests
 from datetime import datetime
 import os
+from urllib.parse import urlparse, urljoin
 try:
     from bs4 import BeautifulSoup
 except ImportError:
     BeautifulSoup = None
 
+try:
+    import feedparser
+except ImportError:
+    feedparser = None
+
 
 class CollectorAgent:
+    """Collects articles from YouTube, Forbes, and web search, normalizing all results."""
+    
     def __init__(self):
         # Load API keys from environment
         self.youtube_api_key = os.getenv("YOUTUBE_API_KEY")
+        self.bing_search_api_key = os.getenv("BING_SEARCH_API_KEY")
         self.google_search_api_key = os.getenv("GOOGLE_SEARCH_API_KEY")
         self.google_search_engine_id = os.getenv("GOOGLE_SEARCH_ENGINE_ID")
-        self.serpapi_key = os.getenv("SERPAPI_KEY")
+        self.openai_api_key = os.getenv("OPENAI_API_KEY")
         
-        # Define methods first (without decorators)
-        self._fetch_youtube_news = self._fetch_youtube_news_impl
-        self._fetch_forbes_articles = self._fetch_forbes_articles_impl
-        self._web_search_articles = self._web_search_articles_impl
-        self._fetch_google_ai_news = self._fetch_google_ai_news_impl
-        self._fetch_official_ai_sites = self._fetch_official_ai_sites_impl
-        self._fetch_global_ai_news = self._fetch_global_ai_news_impl
-        self._extract_source_name = self._extract_source_name
-        self._clean_title = self._clean_title_impl
-        self._remove_duplicates = self._remove_duplicates_impl
-        
-        # Note: We're using direct method calls instead of function_tool decorators
-        # to avoid schema issues and ensure reliable execution
-        # The Agent is defined but we use direct calls in collect_articles()
-        
-        # Agent definition (not actively used - we use direct method calls)
-        # This is kept for potential future use with AgentRunner
+        # Agent for content extraction fallback
         self.agent = Agent(
             name="CollectorAgent",
             instructions="""
             You are a news collector agent. Your job is to:
-            1. Fetch news articles from multiple sources (YouTube, Forbes, Google AI, official AI websites, web search)
-            2. Clean article titles (remove extra whitespace, special characters)
-            3. Remove duplicate articles based on title similarity
-            4. Return a list of unique, clean articles
-            
-            Always return articles in a structured format with: title, url, source, published_at
+            1. Fetch articles from YouTube (transcripts/posts), Forbes, and web search
+            2. Normalize all results to a consistent structure
+            3. Extract content from web pages when needed
+            4. Return normalized articles with: title, url, content, published_at, thumbnail
             """,
             model="gpt-4o",
-            tools=[]  # Empty tools list - using direct method calls instead
+            tools=[]
         )
     
-    def _fetch_youtube_news_impl(self, query: str, max_results: int = 5) -> List[Dict]:
-        """Fetch YouTube news videos using YouTube Data API or RSS feed"""
+    def normalize_article(self, raw_article: Dict[str, Any]) -> Dict[str, str]:
+        """
+        Normalize article to standard structure:
+        {
+            "title": string,
+            "url": string,
+            "content": string,
+            "published_at": ISO string,
+            "thumbnail": string
+        }
+        Also preserves additional fields like "source", "description" for compatibility.
+        """
+        # Extract and normalize fields
+        title = str(raw_article.get("title", "")).strip()
+        url = str(raw_article.get("url", "")).strip()
+        
+        # Get content from various possible fields
+        content = (
+            raw_article.get("content") or
+            raw_article.get("description") or
+            raw_article.get("summary") or
+            raw_article.get("snippet") or
+            ""
+        )
+        content = str(content).strip()
+        
+        # Normalize published_at to ISO format
+        published_at = raw_article.get("published_at") or raw_article.get("published") or raw_article.get("date")
+        if published_at:
+            try:
+                if isinstance(published_at, str):
+                    # Try parsing various date formats
+                    from dateutil import parser as date_parser
+                    published_dt = date_parser.parse(published_at)
+                    published_at = published_dt.isoformat()
+                elif hasattr(published_at, 'isoformat'):
+                    published_at = published_at.isoformat()
+            except:
+                published_at = datetime.now().isoformat()
+        else:
+            published_at = datetime.now().isoformat()
+        
+        # Get thumbnail from various possible fields
+        thumbnail = (
+            raw_article.get("thumbnail") or
+            raw_article.get("thumbnail_url") or
+            raw_article.get("image") or
+            raw_article.get("image_url") or
+            ""
+        )
+        thumbnail = str(thumbnail).strip()
+        
+        # If thumbnail is relative URL, make it absolute
+        if thumbnail and not thumbnail.startswith(('http://', 'https://')):
+            if url:
+                thumbnail = urljoin(url, thumbnail)
+        
+        # Build normalized article (required fields)
+        normalized = {
+            "title": title,
+            "url": url,
+            "content": content,
+            "published_at": published_at,
+            "thumbnail": thumbnail
+        }
+        
+        # Preserve additional fields for compatibility
+        normalized["source"] = raw_article.get("source", "unknown")
+        if "description" in raw_article and raw_article["description"] != content:
+            normalized["description"] = raw_article["description"]
+        elif not normalized.get("description") and content:
+            # Use content as description if description not provided
+            normalized["description"] = content[:500]
+        if "video_url" in raw_article:
+            normalized["video_url"] = raw_article["video_url"]
+        if "documentation_url" in raw_article:
+            normalized["documentation_url"] = raw_article["documentation_url"]
+        
+        return normalized
+    
+    def fetch_youtube_articles(self, query: str = "AI news latest", max_results: int = 10) -> List[Dict[str, str]]:
+        """
+        Fetch YouTube videos/transcripts using YouTube Data API or RSS feeds.
+        Returns normalized articles.
+        """
         articles = []
         
-        # Method 1: Use YouTube Data API if key is available
+        # Method 1: YouTube Data API
         if self.youtube_api_key:
             try:
-                print(f"Using YouTube Data API to search for: '{query}'")
+                print(f"Fetching YouTube videos via API for: '{query}'")
                 api_url = "https://www.googleapis.com/youtube/v3/search"
                 params = {
                     "part": "snippet",
-                    "q": f"{query} AI news latest",
+                    "q": f"{query} AI",
                     "type": "video",
                     "maxResults": max_results,
                     "order": "date",
                     "key": self.youtube_api_key,
-                    "publishedAfter": (datetime.now().replace(day=1).strftime("%Y-%m-%dT00:00:00Z"))  # This month
+                    "publishedAfter": (datetime.now().replace(day=1).strftime("%Y-%m-%dT00:00:00Z"))
                 }
                 
                 response = requests.get(api_url, params=params, timeout=15)
                 if response.status_code == 200:
                     data = response.json()
-                    print(f"YouTube API returned {len(data.get('items', []))} videos")
-                    # Professional/Technical AI keywords for filtering
-                    professional_ai_keywords = [
-                        'artificial intelligence', 'ai', 'machine learning', 'deep learning',
-                        'neural network', 'llm', 'gpt', 'openai', 'transformer', 'nlp',
-                        'computer vision', 'robotics', 'automation', 'data science',
-                        'research', 'breakthrough', 'innovation', 'technology', 'algorithm',
-                        'model', 'training', 'inference', 'architecture', 'neural', 'tensor',
-                        'pytorch', 'tensorflow', 'dataset', 'benchmark', 'paper', 'study',
-                        'conference', 'journal', 'publication', 'researcher', 'scientist',
-                        'development', 'implementation', 'framework', 'library', 'api'
-                    ]
-                    
-                    # Strict exclusion keywords for entertainment content
-                    exclude_keywords = [
-                        'shorts', '#shorts', 'viral', 'trending', 'fitness', 'motivation',
-                        'funny', 'comedy', 'entertainment', 'meme', 'joke', 'prank',
-                        'cartoon', 'anime', 'naruto', 'pokemon', 'gaming', 'game',
-                        'music', 'song', 'dance', 'tiktok', 'reels', 'instagram',
-                        'cooking', 'recipe', 'food', 'travel', 'vlog', 'lifestyle',
-                        'beauty', 'makeup', 'fashion', 'celebrity', 'gossip'
-                    ]
-                    
                     for item in data.get("items", []):
                         snippet = item.get("snippet", {})
-                        title = snippet.get("title", "")
+                        video_id = item.get("id", {}).get("videoId", "")
+                        
+                        # Get video details for transcript
+                        video_url = f"https://www.youtube.com/watch?v={video_id}"
                         description = snippet.get("description", "")
-                        channel_title = snippet.get("channelTitle", "").lower()
                         
-                        # Filter for professional/technical AI content
-                        content = f"{title} {description} {channel_title}".lower()
-                        is_professional_ai = any(keyword in content for keyword in professional_ai_keywords)
+                        # Try to get transcript (YouTube doesn't provide API for this, but we can note it)
+                        # For now, use description as content
+                        content = description or snippet.get("title", "")
                         
-                        # Exclude entertainment content strictly
-                        has_exclude = any(exclude in content for exclude in exclude_keywords)
+                        thumbnails = snippet.get("thumbnails", {})
+                        thumbnail = (
+                            thumbnails.get("high", {}).get("url") or
+                            thumbnails.get("medium", {}).get("url") or
+                            thumbnails.get("default", {}).get("url") or
+                            ""
+                        )
                         
-                        # Only include professional AI content, exclude entertainment
-                        if is_professional_ai and not has_exclude:
-                            video_id = item.get('id', {}).get('videoId', '')
-                            thumbnails = snippet.get("thumbnails", {})
-                            thumbnail_url = thumbnails.get("high", {}).get("url") or thumbnails.get("medium", {}).get("url") or thumbnails.get("default", {}).get("url")
-                            
-                            video_url = f"https://www.youtube.com/watch?v={video_id}"
-                            articles.append({
-                                "title": title,
-                                "url": video_url,
-                                "source": "youtube",
-                                "published_at": snippet.get("publishedAt", datetime.now().isoformat()),
-                                "description": description[:200],
-                                "thumbnail": thumbnail_url,
-                                "video_url": video_url,
-                                "documentation_url": None
-                            })
-                            
-                            if len(articles) >= max_results:
-                                break
+                        raw_article = {
+                            "title": snippet.get("title", ""),
+                            "url": video_url,
+                            "content": content,
+                            "description": description[:500] if description else "",
+                            "published_at": snippet.get("publishedAt", ""),
+                            "thumbnail": thumbnail,
+                            "source": "youtube",
+                            "video_id": video_id,
+                            "video_url": video_url
+                        }
+                        
+                        articles.append(self.normalize_article(raw_article))
+                        
+                        if len(articles) >= max_results:
+                            break
+                    
                     if articles:
-                        print(f"Successfully fetched {len(articles)} YouTube videos")
+                        print(f"Fetched {len(articles)} YouTube videos via API")
                         return articles
-                else:
-                    error_data = response.json() if response.text else {}
-                    print(f"YouTube API error {response.status_code}: {error_data.get('error', {}).get('message', response.text[:200])}")
             except Exception as e:
                 print(f"Error using YouTube API: {e}")
-                import traceback
-                traceback.print_exc()
         
-        # Method 2: Use RSS feeds (no API key needed)
-        try:
-            import feedparser
-            
-            # Official AI YouTube channels
-            official_ai_channels = [
-                "UCXZCJLdBC09EAR_GWYH9pWQ",  # OpenAI
-                "UCJs2QbeTkm8G3Dg-_7V8SOQ",  # Google AI
-                "UCrB7D8X3YFf3L2qJ8fX9JHg",  # DeepMind
-                "UCbfYPyITQ-7l4upoX8nvctg",  # Two Minute Papers
-                "UCSHZKy0bq3C3uH1n2xbt4mg",  # Lex Fridman
-                "UCrB7D8X3YFf3L2qJ8fX9JHg",  # Anthropic (if available)
-            ]
-            
-            for channel_id in ai_channels[:2]:  # Limit to avoid too many requests
-                try:
-                    rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
-                    feed = feedparser.parse(rss_url)
-                    
-                    for entry in feed.entries[:max_results]:
-                        title = entry.get('title', '')
-                        # Filter for AI-related content
-                        if any(term in title.lower() for term in ['ai', 'artificial intelligence', 'machine learning', 'llm', 'gpt', query.lower()]):
-                            articles.append({
-                                "title": title,
-                                "url": entry.get('link', ''),
+        # Method 2: RSS Feeds (fallback)
+        if feedparser:
+            try:
+                print("Trying YouTube RSS feeds...")
+                # Popular AI YouTube channels
+                channel_ids = [
+                    "UCXZCJLdBC09EAR_GWYH9pWQ",  # OpenAI
+                    "UCJs2QbeTkm8G3Dg-_7V8SOQ",  # Google AI
+                ]
+                
+                for channel_id in channel_ids[:2]:  # Limit to avoid too many requests
+                    try:
+                        rss_url = f"https://www.youtube.com/feeds/videos.xml?channel_id={channel_id}"
+                        feed = feedparser.parse(rss_url)
+                        
+                        for entry in feed.entries[:max_results]:
+                            summary = entry.get("summary", "") if hasattr(entry, "summary") else ""
+                            raw_article = {
+                                "title": entry.get("title", ""),
+                                "url": entry.get("link", ""),
+                                "content": summary,
+                                "description": summary[:500] if summary else "",
+                                "published_at": entry.get("published", ""),
+                                "thumbnail": "",  # RSS doesn't provide thumbnails
                                 "source": "youtube",
-                                "published_at": entry.get('published', datetime.now().isoformat()),
-                                "description": entry.get('summary', '')[:200] if hasattr(entry, 'summary') else ''
-                            })
+                                "video_url": entry.get("link", "")
+                            }
+                            
+                            articles.append(self.normalize_article(raw_article))
                             
                             if len(articles) >= max_results:
                                 break
-                    
-                    if len(articles) >= max_results:
-                        break
-                except Exception as e:
-                    print(f"Error fetching YouTube RSS for channel {channel_id}: {e}")
-                    continue
-                    
-        except Exception as e:
-            print(f"Error fetching YouTube news: {e}")
-        
-        # Fallback if no results
-        if not articles:
-            return [{
-                "title": f"YouTube: {query} - Latest AI Updates",
-                "url": f"https://youtube.com/results?search_query={query.replace(' ', '+')}+AI",
-                "source": "youtube",
-                "published_at": datetime.now().isoformat()
-            }]
-        
-        return articles[:max_results]
-    
-    def _fetch_google_ai_news_impl(self, query: str, max_results: int = 5) -> List[Dict]:
-        """Fetch news from Google AI Blog and official Google AI sources"""
-        articles = []
-        
-        try:
-            import feedparser
-            
-            # Google AI Blog RSS
-            rss_urls = [
-                "https://ai.googleblog.com/feeds/posts/default",
-            ]
-            
-            for rss_url in rss_urls:
-                try:
-                    feed = feedparser.parse(rss_url)
-                    for entry in feed.entries[:max_results]:
-                        articles.append({
-                            "title": entry.get('title', ''),
-                            "url": entry.get('link', ''),
-                            "source": "google_ai",
-                            "published_at": entry.get('published', datetime.now().isoformat()),
-                            "description": entry.get('summary', '')[:200] if hasattr(entry, 'summary') else ''
-                        })
-                except Exception as e:
-                    print(f"Error parsing Google AI RSS {rss_url}: {e}")
-                    continue
-                    
-        except Exception as e:
-            print(f"Error fetching Google AI news: {e}")
-        
-        return articles[:max_results]
-    
-    def _fetch_official_ai_sites_impl(self, query: str, max_results: int = 5) -> List[Dict]:
-        """Fetch news from official AI company websites"""
-        articles = []
-        
-        try:
-            import feedparser
-            
-            # Official AI company documentation and blog RSS feeds
-            official_docs_rss = [
-                "https://ai.googleblog.com/feeds/posts/default",  # Google AI Blog
-                "https://openai.com/blog/rss.xml",  # OpenAI Blog (if available)
-                "https://www.deepmind.com/blog/feed",  # DeepMind Blog
-                "https://www.anthropic.com/news/rss.xml",  # Anthropic News
-            ]
-            
-            # Try to fetch from official RSS feeds
-            try:
-                import feedparser
-                for rss_url in official_docs_rss:
-                    try:
-                        feed = feedparser.parse(rss_url)
-                        if feed.entries:
-                            for entry in feed.entries[:max_results]:
-                                doc_url = entry.get('link', '')
-                                articles.append({
-                                    "title": entry.get('title', ''),
-                                    "url": doc_url,
-                                    "source": "official_docs",
-                                    "published_at": entry.get('published', datetime.now().isoformat()),
-                                    "description": entry.get('summary', '')[:200] if hasattr(entry, 'summary') else '',
-                                    "documentation_url": doc_url,
-                                    "video_url": None
-                                })
-                                if len(articles) >= max_results:
-                                    break
+                        
                         if len(articles) >= max_results:
                             break
                     except Exception as e:
-                        print(f"Error parsing RSS feed {rss_url}: {e}")
+                        print(f"Error fetching YouTube RSS for channel {channel_id}: {e}")
                         continue
             except Exception as e:
-                print(f"Error fetching official RSS feeds: {e}")
-            
-            # Use Google Custom Search API if available to search official sites
-            if self.google_search_api_key and self.google_search_engine_id:
-                try:
-                    search_url = "https://www.googleapis.com/customsearch/v1"
-                    params = {
-                        "key": self.google_search_api_key,
-                        "cx": self.google_search_engine_id,
-                        "q": f"{query} site:openai.com OR site:anthropic.com OR site:deepmind.com",
-                        "num": max_results
-                    }
-                    
-                    response = requests.get(search_url, params=params, timeout=10)
-                    if response.status_code == 200:
-                        data = response.json()
-                        for item in data.get("items", []):
-                            doc_url = item.get("link", "")
-                            articles.append({
-                                "title": item.get("title", ""),
-                                "url": doc_url,
-                                "source": "official_ai",
-                                "published_at": item.get("pagemap", {}).get("metatags", [{}])[0].get("article:published_time", datetime.now().isoformat()),
-                                "description": item.get("snippet", "")[:200],
-                                "documentation_url": doc_url,
-                                "video_url": None
-                            })
-                except Exception as e:
-                    print(f"Error using Google Custom Search: {e}")
-            
-            # Use SerpAPI as alternative
-            elif self.serpapi_key:
-                try:
-                    serpapi_url = "https://serpapi.com/search"
-                    params = {
-                        "api_key": self.serpapi_key,
-                        "engine": "google",
-                        "q": f"{query} site:openai.com OR site:anthropic.com",
-                        "num": max_results
-                    }
-                    
-                    response = requests.get(serpapi_url, params=params, timeout=10)
-                    if response.status_code == 200:
-                        data = response.json()
-                        for result in data.get("organic_results", [])[:max_results]:
-                            articles.append({
-                                "title": result.get("title", ""),
-                                "url": result.get("link", ""),
-                                "source": "official_ai",
-                                "published_at": result.get("date", datetime.now().isoformat()),
-                                "description": result.get("snippet", "")[:200]
-                            })
-                except Exception as e:
-                    print(f"Error using SerpAPI: {e}")
-            
-        except Exception as e:
-            print(f"Error fetching official AI sites: {e}")
+                print(f"Error fetching YouTube RSS: {e}")
         
+        print(f"Fetched {len(articles)} YouTube articles")
         return articles[:max_results]
     
-    def _fetch_forbes_articles_impl(self, query: str, max_results: int = 5) -> List[Dict]:
-        """Fetch recent Forbes articles using RSS feed"""
-        try:
-            import feedparser
-            
-            # Forbes RSS feeds - try multiple sources
-            rss_urls = [
-                "https://www.forbes.com/real-time/feed2/",
-                "https://www.forbes.com/innovation/feed2/",
-                "https://www.forbes.com/ai/feed2/",
-            ]
-            
-            articles = []
-            for rss_url in rss_urls:
-                try:
-                    feed = feedparser.parse(rss_url)
-                    if feed.entries:
-                        for entry in feed.entries[:max_results]:
-                            # Filter for AI-related content
-                            title = entry.get('title', '')
-                            if 'ai' in title.lower() or 'artificial intelligence' in title.lower() or query.lower() in title.lower():
-                                articles.append({
-                                    "title": title,
-                                    "url": entry.get('link', ''),
-                                    "source": "forbes",
-                                    "published_at": entry.get('published', datetime.now().isoformat())
-                                })
-                except Exception as e:
-                    print(f"Error parsing Forbes RSS {rss_url}: {e}")
-                    continue
-                
-                if len(articles) >= max_results:
-                    break
-            
-            # If no RSS results, use web search fallback
-            if not articles:
-                # Search Forbes website for AI news
-                search_query = f"{query} site:forbes.com AI"
-                web_results = self._web_search_articles_impl(search_query, max_results=max_results)
-                # Filter to only Forbes URLs
-                for result in web_results:
-                    if 'forbes.com' in result.get('url', ''):
-                        result['source'] = 'forbes'
-                        articles.append(result)
-            
-            # Fallback if still no results
-            if not articles:
-                articles = [
-                    {
-                        "title": f"Forbes: {query} - Industry Analysis",
-                        "url": f"https://forbes.com/{query.replace(' ', '-')}",
-                        "source": "forbes",
-                        "published_at": datetime.now().isoformat()
-                    }
-                ]
-            
-            return articles[:max_results]
-        except Exception as e:
-            print(f"Error fetching Forbes articles: {e}")
-            # Return fallback
-            return [
-                {
-                    "title": f"Forbes: {query} - Latest News",
-                    "url": f"https://forbes.com/{query.replace(' ', '-')}",
-                    "source": "forbes",
-                    "published_at": datetime.now().isoformat()
-                }
-            ]
-    
-    def _web_search_articles_impl(self, query: str, max_results: int = 5) -> List[Dict]:
-        """Search for articles using RSS feeds from major tech news sites"""
-        try:
-            import feedparser
-            
-            # Major tech/AI news RSS feeds
-            rss_feeds = [
-                {
-                    "url": "https://techcrunch.com/feed/",
-                    "source": "techcrunch",
-                    "filter": ["ai", "artificial intelligence", "machine learning", "llm", "gpt", "openai"]
-                },
-                {
-                    "url": "https://www.theverge.com/rss/index.xml",
-                    "source": "theverge",
-                    "filter": ["ai", "artificial intelligence", "machine learning"]
-                },
-                {
-                    "url": "https://feeds.feedburner.com/oreilly/radar",
-                    "source": "oreilly",
-                    "filter": ["ai", "artificial intelligence"]
-                },
-                {
-                    "url": "https://www.wired.com/feed/rss",
-                    "source": "wired",
-                    "filter": ["ai", "artificial intelligence", "machine learning"]
-                },
-                {
-                    "url": "https://arstechnica.com/feed/",
-                    "source": "arstechnica",
-                    "filter": ["ai", "artificial intelligence"]
-                }
-            ]
-            
-            articles = []
-            search_terms = query.lower().split()
-            
-            for feed_config in rss_feeds:
-                try:
-                    feed = feedparser.parse(feed_config["url"])
-                    if not feed.entries:
-                        continue
-                    
-                    for entry in feed.entries[:max_results * 2]:  # Get more to filter
-                        title = entry.get('title', '').lower()
-                        description = entry.get('summary', '').lower() if hasattr(entry, 'summary') else ''
-                        content = title + ' ' + description
-                        
-                        # Filter for AI-related content
-                        is_relevant = any(
-                            term in content or 
-                            any(filt in content for filt in feed_config["filter"])
-                            for term in search_terms
-                        ) if search_terms else True
-                        
-                        if is_relevant or 'ai' in content or 'artificial intelligence' in content:
-                            # Parse published date
-                            published = entry.get('published', '')
-                            try:
-                                from dateutil import parser as date_parser
-                                published_dt = date_parser.parse(published)
-                                published_iso = published_dt.isoformat()
-                            except:
-                                published_iso = datetime.now().isoformat()
-                            
-                            articles.append({
-                                "title": entry.get('title', 'Untitled'),
-                                "url": entry.get('link', ''),
-                                "source": feed_config["source"],
-                                "published_at": published_iso,
-                                "description": entry.get('summary', '')[:200] if hasattr(entry, 'summary') else ''
-                            })
-                            
-                            if len(articles) >= max_results:
-                                break
-                    
-                    if len(articles) >= max_results:
-                        break
-                        
-                except Exception as e:
-                    print(f"Error parsing RSS feed {feed_config['url']}: {e}")
-                    continue
-            
-            # If we still don't have enough, try additional sources
-            if len(articles) < max_results:
-                additional_feeds = [
-                    "https://feeds.feedburner.com/venturebeat/SZYF",
-                    "https://www.zdnet.com/topic/artificial-intelligence/rss.xml",
-                ]
-                
-                for feed_url in additional_feeds:
-                    try:
-                        feed = feedparser.parse(feed_url)
-                        for entry in feed.entries[:max_results - len(articles)]:
-                            published = entry.get('published', '')
-                            try:
-                                from dateutil import parser as date_parser
-                                published_dt = date_parser.parse(published)
-                                published_iso = published_dt.isoformat()
-                            except:
-                                published_iso = datetime.now().isoformat()
-                            
-                            articles.append({
-                                "title": entry.get('title', 'Untitled'),
-                                "url": entry.get('link', ''),
-                                "source": "tech_news",
-                                "published_at": published_iso,
-                                "description": entry.get('summary', '')[:200] if hasattr(entry, 'summary') else ''
-                            })
-                            
-                            if len(articles) >= max_results:
-                                break
-                    except Exception as e:
-                        print(f"Error with additional feed {feed_url}: {e}")
-                        continue
-            
-            return articles[:max_results]
-            
-        except Exception as e:
-            print(f"Error fetching web articles: {e}")
-            import traceback
-            traceback.print_exc()
-            # Return empty list instead of fake data
-            return []
-    
-    def _fetch_global_ai_news_impl(self, query: str, max_results: int = 10) -> List[Dict]:
-        """Fetch articles from global AI news websites via RSS feeds"""
+    def fetch_forbes_articles(self, query: str = "AI business", max_results: int = 10) -> List[Dict[str, str]]:
+        """
+        Fetch Forbes articles using RSS feeds or HTML scraping.
+        Returns normalized articles.
+        """
         articles = []
         
-        try:
-            import feedparser
-            
-            # Global AI news websites RSS feeds
-            global_ai_sources = [
-                # Tech News Sites
-                "https://techcrunch.com/tag/artificial-intelligence/feed/",
-                "https://www.theverge.com/ai-artificial-intelligence/rss/index.xml",
-                "https://www.wired.com/feed/tag/ai/latest/rss",
-                "https://arstechnica.com/tag/artificial-intelligence/feed/",
-                "https://www.zdnet.com/topic/artificial-intelligence/rss.xml",
+        # Method 1: RSS Feeds
+        if feedparser:
+            try:
+                print(f"Fetching Forbes articles via RSS for: '{query}'")
+                rss_urls = [
+                    "https://www.forbes.com/real-time/feed2/",
+                    "https://www.forbes.com/innovation/feed2/",
+                    "https://www.forbes.com/ai/feed2/",
+                ]
                 
-                # Research & Academic
-                "https://www.technologyreview.com/topic/artificial-intelligence/feed/",
-                "https://venturebeat.com/ai/feed/",
-                "https://www.artificialintelligence-news.com/feed/",
-                
-                # Company Blogs
-                "https://ai.googleblog.com/feeds/posts/default",
-                "https://www.deepmind.com/blog/feed",
-                "https://www.anthropic.com/news/rss.xml",
-            ]
-            
-            professional_keywords = [
-                'artificial intelligence', 'ai', 'machine learning', 'deep learning',
-                'neural network', 'llm', 'gpt', 'openai', 'transformer', 'nlp',
-                'computer vision', 'robotics', 'automation', 'data science',
-                'research', 'breakthrough', 'innovation', 'technology', 'algorithm',
-                'model', 'training', 'inference', 'architecture', 'neural', 'tensor',
-                'pytorch', 'tensorflow', 'dataset', 'benchmark', 'paper', 'study',
-                'conference', 'journal', 'publication', 'researcher', 'scientist'
-            ]
-            
-            exclude_keywords = [
-                'shorts', '#shorts', 'viral', 'trending', 'funny', 'comedy',
-                'entertainment', 'meme', 'cartoon', 'anime', 'gaming', 'music',
-                'cooking', 'recipe', 'food', 'travel', 'vlog', 'lifestyle'
-            ]
-            
-            for rss_url in global_ai_sources:
-                try:
-                    feed = feedparser.parse(rss_url)
-                    if not feed.entries:
+                for rss_url in rss_urls:
+                    try:
+                        feed = feedparser.parse(rss_url)
+                        if not feed.entries:
+                            continue
+                        
+                        for entry in feed.entries[:max_results]:
+                            title = entry.get("title", "")
+                            # Filter for AI-related content
+                            if query.lower() in title.lower() or "ai" in title.lower() or "artificial intelligence" in title.lower():
+                                summary = entry.get("summary", "") if hasattr(entry, "summary") else ""
+                                raw_article = {
+                                    "title": title,
+                                    "url": entry.get("link", ""),
+                                    "content": summary,
+                                    "description": summary[:500] if summary else "",
+                                    "published_at": entry.get("published", ""),
+                                    "thumbnail": "",
+                                    "source": "forbes"
+                                }
+                                
+                                articles.append(self.normalize_article(raw_article))
+                                
+                                if len(articles) >= max_results:
+                                    break
+                        
+                        if len(articles) >= max_results:
+                            break
+                    except Exception as e:
+                        print(f"Error parsing Forbes RSS {rss_url}: {e}")
                         continue
-                    
-                    for entry in feed.entries[:max_results]:
-                        title = entry.get('title', '')
-                        description = entry.get('summary', '') if hasattr(entry, 'summary') else ''
-                        link = entry.get('link', '')
-                        
-                        # Filter for professional AI content
-                        content = f"{title} {description}".lower()
-                        is_professional = any(keyword in content for keyword in professional_keywords)
-                        has_exclude = any(exclude in content for exclude in exclude_keywords)
-                        
-                        if is_professional and not has_exclude:
-                            # Parse published date
-                            published_iso = datetime.now().isoformat()
-                            if hasattr(entry, 'published_parsed') and entry.published_parsed:
-                                try:
-                                    from time import mktime
-                                    published_iso = datetime.fromtimestamp(mktime(entry.published_parsed)).isoformat()
-                                except:
-                                    pass
+            except Exception as e:
+                print(f"Error fetching Forbes RSS: {e}")
+        
+        # Method 2: HTML Scraping (fallback if RSS fails)
+        if len(articles) < max_results:
+            try:
+                print("Trying Forbes HTML scraping...")
+                forbes_urls = [
+                    "https://www.forbes.com/innovation/",
+                    "https://www.forbes.com/ai/",
+                ]
+                
+                headers = {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+                }
+                
+                for url in forbes_urls:
+                    try:
+                        response = requests.get(url, headers=headers, timeout=10)
+                        if response.status_code == 200 and BeautifulSoup:
+                            soup = BeautifulSoup(response.content, "html.parser")
                             
-                            articles.append({
-                                "title": title,
-                                "url": link,
-                                "source": self._extract_source_name(rss_url),
-                                "published_at": published_iso,
-                                "description": description[:500] if description else ""
-                            })
+                            # Find article links
+                            article_links = soup.find_all("a", href=re.compile(r"/\d{4}/\d{2}/\d{2}/"))
                             
-                            if len(articles) >= max_results * 2:  # Collect more for deduplication
-                                break
+                            for link in article_links[:max_results]:
+                                article_url = urljoin("https://www.forbes.com", link.get("href", ""))
+                                title = link.get_text(strip=True)
+                                
+                                if title and query.lower() in title.lower():
+                                    raw_article = {
+                                        "title": title,
+                                        "url": article_url,
+                                        "content": "",  # Will be fetched later if needed
+                                        "description": "",
+                                        "published_at": datetime.now().isoformat(),
+                                        "thumbnail": "",
+                                        "source": "forbes"
+                                    }
+                                    
+                                    articles.append(self.normalize_article(raw_article))
+                                    
+                                    if len(articles) >= max_results:
+                                        break
+                        
+                        if len(articles) >= max_results:
+                            break
+                    except Exception as e:
+                        print(f"Error scraping Forbes {url}: {e}")
+                        continue
+            except Exception as e:
+                print(f"Error scraping Forbes: {e}")
+        
+        print(f"Fetched {len(articles)} Forbes articles")
+        return articles[:max_results]
+    
+    def fetch_web_search_articles(self, query: str = "AI news", max_results: int = 10) -> List[Dict[str, str]]:
+        """
+        Fetch articles from web search using Bing Search API or Google Custom Search.
+        Returns normalized articles.
+        """
+        articles = []
+        
+        # Method 1: Bing Search API (preferred)
+        if self.bing_search_api_key:
+            try:
+                print(f"Fetching web articles via Bing Search API for: '{query}'")
+                api_url = "https://api.bing.microsoft.com/v7.0/search"
+                headers = {
+                    "Ocp-Apim-Subscription-Key": self.bing_search_api_key
+                }
+                params = {
+                    "q": f"{query} AI news",
+                    "count": max_results,
+                    "offset": 0,
+                    "mkt": "en-US",
+                    "safeSearch": "Moderate"
+                }
+                
+                response = requests.get(api_url, headers=headers, params=params, timeout=15)
+                if response.status_code == 200:
+                    data = response.json()
+                    for item in data.get("webPages", {}).get("value", []):
+                        snippet = item.get("snippet", "")
+                        raw_article = {
+                            "title": item.get("name", ""),
+                            "url": item.get("url", ""),
+                            "content": snippet,
+                            "description": snippet[:500] if snippet else "",
+                            "published_at": item.get("datePublished", datetime.now().isoformat()),
+                            "thumbnail": "",
+                            "source": "web_search"
+                        }
+                        
+                        articles.append(self.normalize_article(raw_article))
                     
-                    if len(articles) >= max_results * 2:
-                        break
-                except Exception as e:
-                    print(f"Error fetching RSS feed {rss_url}: {e}")
-                    continue
+                    if articles:
+                        print(f"Fetched {len(articles)} articles via Bing Search API")
+                        return articles
+            except Exception as e:
+                print(f"Error using Bing Search API: {e}")
+        
+        # Method 2: Google Custom Search API (fallback)
+        if self.google_search_api_key and self.google_search_engine_id:
+            try:
+                print(f"Fetching web articles via Google Custom Search for: '{query}'")
+                api_url = "https://www.googleapis.com/customsearch/v1"
+                params = {
+                    "key": self.google_search_api_key,
+                    "cx": self.google_search_engine_id,
+                    "q": f"{query} AI news",
+                    "num": max_results
+                }
+                
+                response = requests.get(api_url, params=params, timeout=15)
+                if response.status_code == 200:
+                    data = response.json()
+                    for item in data.get("items", []):
+                        snippet = item.get("snippet", "")
+                        raw_article = {
+                            "title": item.get("title", ""),
+                            "url": item.get("link", ""),
+                            "content": snippet,
+                            "description": snippet[:500] if snippet else "",
+                            "published_at": datetime.now().isoformat(),
+                            "thumbnail": "",
+                            "source": "web_search"
+                        }
+                        
+                        articles.append(self.normalize_article(raw_article))
+                    
+                    if articles:
+                        print(f"Fetched {len(articles)} articles via Google Custom Search")
+                        return articles
+            except Exception as e:
+                print(f"Error using Google Custom Search: {e}")
+        
+        # Method 3: RSS Feeds (fallback)
+        if feedparser and len(articles) < max_results:
+            try:
+                print("Trying RSS feeds as fallback...")
+                rss_feeds = [
+                    {"url": "https://techcrunch.com/feed/", "source": "techcrunch"},
+                    {"url": "https://www.theverge.com/rss/index.xml", "source": "theverge"},
+                    {"url": "https://www.wired.com/feed/rss", "source": "wired"},
+                ]
+                
+                for feed_config in rss_feeds:
+                    try:
+                        feed = feedparser.parse(feed_config["url"])
+                        if not feed.entries:
+                            continue
+                        
+                        for entry in feed.entries[:max_results]:
+                            title = entry.get("title", "")
+                            if query.lower() in title.lower() or "ai" in title.lower():
+                                summary = entry.get("summary", "") if hasattr(entry, "summary") else ""
+                                raw_article = {
+                                    "title": title,
+                                    "url": entry.get("link", ""),
+                                    "content": summary,
+                                    "description": summary[:500] if summary else "",
+                                    "published_at": entry.get("published", ""),
+                                    "thumbnail": "",
+                                    "source": feed_config["source"]
+                                }
+                                
+                                articles.append(self.normalize_article(raw_article))
+                                
+                                if len(articles) >= max_results:
+                                    break
+                        
+                        if len(articles) >= max_results:
+                            break
+                    except Exception as e:
+                        print(f"Error parsing RSS feed {feed_config['url']}: {e}")
+                        continue
+            except Exception as e:
+                print(f"Error fetching RSS feeds: {e}")
+        
+        print(f"Fetched {len(articles)} web search articles")
+        return articles[:max_results]
+    
+    def extract_content_with_fallback(self, article: Dict[str, str]) -> Dict[str, str]:
+        """
+        Fallback: If content not available, fetch webpage and extract content.
+        Uses ArticleFetcher service if available, otherwise uses simple scraping.
+        """
+        # If content already exists and is substantial, return as-is
+        if article.get("content") and len(article["content"]) > 200:
+            return article
+        
+        url = article.get("url", "")
+        if not url:
+            return article
+        
+        print(f"Extracting content from: {url}")
+        
+        try:
+            # Try using ArticleFetcher service
+            try:
+                from app.services.article_fetcher import ArticleFetcher
+                fetcher = ArticleFetcher()
+                result = fetcher.fetch_article_content(url, article.get("title", ""), article.get("content", ""))
+                
+                if result.get("content") and len(result["content"]) > 200:
+                    article["content"] = result["content"]
+                    if result.get("thumbnail") and not article.get("thumbnail"):
+                        article["thumbnail"] = result.get("thumbnail", "")
+                    print(f"Successfully extracted {len(result['content'])} characters from {url}")
+                    return article
+            except ImportError:
+                print("ArticleFetcher not available, using simple scraping...")
+            except Exception as e:
+                print(f"Error using ArticleFetcher: {e}")
             
-            return articles[:max_results]
+            # Fallback: Simple HTML scraping
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+            }
+            response = requests.get(url, headers=headers, timeout=15)
+            if response.status_code == 200 and BeautifulSoup:
+                soup = BeautifulSoup(response.content, "html.parser")
+                
+                # Remove unwanted elements
+                for tag in soup(["script", "style", "nav", "header", "footer", "aside"]):
+                    tag.decompose()
+                
+                # Try to find main content
+                main_content = (
+                    soup.find("article") or
+                    soup.find("main") or
+                    soup.find(class_=re.compile("article|content|post", re.I)) or
+                    soup
+                )
+                
+                # Extract text
+                content = main_content.get_text(separator="\n\n", strip=True)
+                # Clean up excessive whitespace
+                content = re.sub(r"\n{3,}", "\n\n", content)
+                
+                if len(content) > 200:
+                    article["content"] = content[:5000]  # Limit to 5000 chars
+                    print(f"Extracted {len(content)} characters via simple scraping")
+                    
+                    # Try to get thumbnail
+                    img = soup.find("img")
+                    if img and img.get("src"):
+                        article["thumbnail"] = urljoin(url, img["src"])
+                    
+                    return article
         except Exception as e:
-            print(f"Error fetching global AI news: {e}")
-            return []
+            print(f"Error extracting content from {url}: {e}")
+        
+        # If all fails, return article as-is (with minimal content)
+        return article
     
-    def _extract_source_name(self, url: str) -> str:
-        """Extract source name from RSS URL"""
-        if 'techcrunch' in url:
-            return 'techcrunch'
-        elif 'theverge' in url:
-            return 'the_verge'
-        elif 'wired' in url:
-            return 'wired'
-        elif 'arstechnica' in url:
-            return 'ars_technica'
-        elif 'zdnet' in url:
-            return 'zdnet'
-        elif 'technologyreview' in url or 'mit' in url:
-            return 'mit_tech_review'
-        elif 'venturebeat' in url:
-            return 'venturebeat'
-        elif 'artificialintelligence-news' in url:
-            return 'ai_news'
-        elif 'googleblog' in url:
-            return 'google_ai'
-        elif 'deepmind' in url:
-            return 'deepmind'
-        elif 'anthropic' in url:
-            return 'anthropic'
-        else:
-            return 'ai_news'
-    
-    def _clean_title_impl(self, title: str) -> str:
-        """Clean article title: remove extra whitespace, normalize characters"""
-        if not title:
-            return ""
+    async def collect_articles(self, topic: Optional[str] = None, max_articles: int = 20) -> List[Dict[str, str]]:
+        """
+        Main method to collect articles from all sources.
+        Returns normalized articles with consistent structure.
+        """
+        query = topic or "AI news latest"
         
-        # Remove extra whitespace
-        title = re.sub(r'\s+', ' ', title).strip()
+        print(f"\n{'='*60}")
+        print(f"Collecting articles: '{query}' (max: {max_articles})")
+        print(f"{'='*60}")
+        print(f"YouTube API Key: {'✓ Set' if self.youtube_api_key else '✗ Not set'}")
+        print(f"Bing Search API Key: {'✓ Set' if self.bing_search_api_key else '✗ Not set'}")
+        print(f"Google Search API Key: {'✓ Set' if self.google_search_api_key else '✗ Not set'}")
+        print(f"{'='*60}\n")
         
-        # Remove special characters at start/end
-        title = re.sub(r'^[^\w\s]+|[^\w\s]+$', '', title)
+        all_articles = []
         
-        # Capitalize first letter
-        if title:
-            title = title[0].upper() + title[1:] if len(title) > 1 else title.upper()
+        # Fetch from all sources
+        youtube_articles = self.fetch_youtube_articles(query, max_results=max_articles // 3)
+        print(f"✓ YouTube: {len(youtube_articles)} articles\n")
+        all_articles.extend(youtube_articles)
         
-        return title
-    
-    def _remove_duplicates_impl(self, articles: List[Dict]) -> List[Dict]:
-        """Remove duplicate articles based on URL and title similarity"""
-        if not articles:
-            return []
+        forbes_articles = self.fetch_forbes_articles(query, max_results=max_articles // 3)
+        print(f"✓ Forbes: {len(forbes_articles)} articles\n")
+        all_articles.extend(forbes_articles)
         
+        web_articles = self.fetch_web_search_articles(query, max_results=max_articles // 3)
+        print(f"✓ Web Search: {len(web_articles)} articles\n")
+        all_articles.extend(web_articles)
+        
+        # Remove duplicates by URL
         seen_urls = set()
-        seen_titles = set()
         unique_articles = []
-        
-        for article in articles:
-            url = article.get("url", "").strip()
-            title = article.get("title", "").lower().strip()
-            
-            # Skip if URL already seen (exact duplicate)
-            if url and url in seen_urls:
-                continue
-            
-            # Skip if title is empty
-            if not title:
-                continue
-            
-            # Check for similar titles (fuzzy matching)
-            is_duplicate = False
-            for seen_title in seen_titles:
-                # Normalize titles for comparison
-                title_normalized = re.sub(r'[^\w\s]', '', title)
-                seen_normalized = re.sub(r'[^\w\s]', '', seen_title)
-                
-                # Check exact match
-                if title_normalized == seen_normalized:
-                    is_duplicate = True
-                    break
-                
-                # Check word overlap similarity
-                title_words = set(title_normalized.split())
-                seen_words = set(seen_normalized.split())
-                
-                if len(title_words) > 0 and len(seen_words) > 0:
-                    # Calculate Jaccard similarity
-                    intersection = len(title_words & seen_words)
-                    union = len(title_words | seen_words)
-                    similarity = intersection / union if union > 0 else 0
-                    
-                    # If >80% similar, consider duplicate
-                    if similarity > 0.8:
-                        is_duplicate = True
-                        break
-            
-            if not is_duplicate:
-                if url:
-                    seen_urls.add(url)
-                seen_titles.add(title)
+        for article in all_articles:
+            url = article.get("url", "")
+            if url and url not in seen_urls:
+                seen_urls.add(url)
                 unique_articles.append(article)
         
-        print(f"Deduplication: {len(articles)} articles -> {len(unique_articles)} unique articles")
-        return unique_articles
-    
-    async def collect_articles(self, topic: Optional[str] = None, max_articles: int = 10) -> List[Dict]:
-        """Main method to collect articles from all sources"""
-        search_query = topic or "AI news latest"
+        print(f"Total unique articles: {len(unique_articles)}")
         
-        print(f"Collecting articles with query: '{search_query}', max: {max_articles}")
-        print(f"YouTube API Key: {'Set' if self.youtube_api_key else 'Not set'}")
-        print(f"Google Search API Key: {'Set' if self.google_search_api_key else 'Not set'}")
-        print(f"Google Search Engine ID: {'Set' if self.google_search_engine_id else 'Not set'}")
-        
-        # Collect from all sources in parallel (using direct calls for reliability)
-        youtube_articles = self._fetch_youtube_news_impl(search_query, max_results=max_articles)
-        print(f"YouTube: Found {len(youtube_articles)} articles")
-        
-        google_ai_articles = self._fetch_google_ai_news_impl(search_query, max_results=max_articles)
-        print(f"Google AI: Found {len(google_ai_articles)} articles")
-        
-        official_ai_articles = self._fetch_official_ai_sites_impl(search_query, max_results=max_articles)
-        print(f"Official AI Sites: Found {len(official_ai_articles)} articles")
-        
-        # NEW: Fetch from global AI news sources
-        global_ai_articles = self._fetch_global_ai_news_impl(search_query, max_results=max_articles * 2)
-        print(f"Global AI News: Found {len(global_ai_articles)} articles")
-        
-        forbes_articles = self._fetch_forbes_articles_impl(search_query, max_results=max_articles)
-        print(f"Forbes: Found {len(forbes_articles)} articles")
-        
-        web_articles = self._web_search_articles_impl(search_query, max_results=max_articles)
-        print(f"Web Search: Found {len(web_articles)} articles")
-        
-        # Combine all articles
-        all_articles = youtube_articles + google_ai_articles + official_ai_articles + global_ai_articles + forbes_articles + web_articles
-        print(f"Total articles collected from all sources: {len(all_articles)}")
-        
-        # Clean titles
-        for article in all_articles:
-            article["title"] = self._clean_title_impl(article.get("title", ""))
-        
-        # Remove duplicates
-        unique_articles = self._remove_duplicates_impl(all_articles)
-        print(f"Unique articles after deduplication: {len(unique_articles)}")
-        
-        # Filter for professional/technical AI content only
-        professional_ai_keywords = [
-            'artificial intelligence', 'ai', 'machine learning', 'ml', 'deep learning',
-            'neural network', 'llm', 'large language model', 'gpt', 'openai',
-            'transformer', 'nlp', 'natural language processing', 'computer vision',
-            'robotics', 'automation', 'data science', 'algorithm', 'model',
-            'research', 'paper', 'study', 'breakthrough', 'innovation',
-            'technology', 'tech', 'development', 'advancement', 'progress',
-            'training', 'inference', 'architecture', 'neural', 'tensor',
-            'pytorch', 'tensorflow', 'dataset', 'benchmark', 'conference',
-            'journal', 'publication', 'researcher', 'scientist', 'framework'
-        ]
-        
-        # Strict exclusion for entertainment content
-        exclude_keywords = [
-            'shorts', '#shorts', 'viral', 'trending', 'fitness', 'motivation',
-            'funny', 'comedy', 'entertainment', 'meme', 'joke', 'prank',
-            'cartoon', 'anime', 'naruto', 'pokemon', 'gaming', 'game',
-            'music', 'song', 'dance', 'tiktok', 'reels', 'instagram',
-            'cooking', 'recipe', 'food', 'travel', 'vlog', 'lifestyle',
-            'beauty', 'makeup', 'fashion', 'celebrity', 'gossip'
-        ]
-        
-        filtered_articles = []
+        # Extract content for articles missing content (fallback)
+        print("\nExtracting content for articles missing content...")
         for article in unique_articles:
-            title = (article.get("title", "") or "").lower()
-            description = (article.get("description", "") or "").lower()
-            source = (article.get("source", "") or "").lower()
-            
-            # Check if article is professional AI/knowledge related
-            content = f"{title} {description} {source}"
-            is_professional_ai = any(keyword in content for keyword in professional_ai_keywords)
-            
-            # Exclude entertainment content strictly
-            has_exclude = any(exclude in content for exclude in exclude_keywords)
-            
-            # Only include if professional AI-related AND not excluded
-            if is_professional_ai and not has_exclude:
-                filtered_articles.append(article)
-        
-        print(f"AI-filtered articles: {len(filtered_articles)} (from {len(unique_articles)} unique)")
+            if not article.get("content") or len(article.get("content", "")) < 200:
+                article = self.extract_content_with_fallback(article)
         
         # Limit to max_articles
-        final_articles = filtered_articles[:max_articles]
-        print(f"Returning {len(final_articles)} AI-focused articles")
+        final_articles = unique_articles[:max_articles]
+        
+        print(f"\n{'='*60}")
+        print(f"Final result: {len(final_articles)} normalized articles")
+        print(f"{'='*60}\n")
         
         return final_articles

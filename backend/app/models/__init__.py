@@ -1,5 +1,5 @@
 """Database models."""
+from app.models.user import User
 from app.models.article import Article
 
-__all__ = ["Article"]
-
+__all__ = ["User", "Article"]

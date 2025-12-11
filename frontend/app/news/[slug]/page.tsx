@@ -1,8 +1,11 @@
 import { notFound } from "next/navigation";
 import { SummaryCard } from "@/components/SummaryCard";
+import { Breadcrumb } from "@/components/breadcrumb";
+import { ShareButtons } from "@/components/share-buttons";
 import { Calendar, Tag, Youtube, BookOpen, ExternalLink } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Metadata } from "next";
 import Image from "next/image";
 
@@ -14,19 +17,10 @@ export async function generateStaticParams() {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   
   try {
-    // Try primary endpoint with /api/v1 prefix
-    let response = await fetch(
-      `${apiUrl}/api/v1/list-news?page=1&limit=100`,
+    const response = await fetch(
+      `${apiUrl}/list-news?page=1&limit=100`,
       { next: { revalidate: 3600 } }
     );
-    
-    // If 404, try endpoint without /api/v1 prefix
-    if (!response.ok && response.status === 404) {
-      response = await fetch(
-        `${apiUrl}/list-news?page=1&limit=100`,
-        { next: { revalidate: 3600 } }
-      );
-    }
     
     if (!response.ok) {
       return [];
@@ -50,25 +44,13 @@ export async function generateMetadata({ params }: { params: Promise<{ slug: str
   const siteUrl = process.env.NEXT_PUBLIC_SITE_URL || "https://aidesk.com";
   
   try {
-    // Try primary endpoint with /api/v1 prefix
-    let response = await fetch(
-      `${apiUrl}/api/v1/news/${slug}`,
+    const response = await fetch(
+      `${apiUrl}/news/${slug}`,
       { 
         next: { revalidate: 3600 },
         cache: 'force-cache',
       }
     );
-    
-    // If 404, try endpoint without /api/v1 prefix
-    if (!response.ok && response.status === 404) {
-      response = await fetch(
-        `${apiUrl}/news/${slug}`,
-        { 
-          next: { revalidate: 3600 },
-          cache: 'force-cache',
-        }
-      );
-    }
     
     if (!response.ok) {
       return {
@@ -109,28 +91,16 @@ async function getArticle(slug: string, fetchContent: boolean = true) {
   const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
   
   try {
-    // Try primary endpoint with /api/v1 prefix
-    let response = await fetch(
-      `${apiUrl}/api/v1/news/${slug}?fetch_content=${fetchContent}`,
+    const response = await fetch(
+      `${apiUrl}/news/${slug}`,
       { 
         cache: 'no-store',
       }
     );
     
-    // If 404, try endpoint without /api/v1 prefix (actual backend endpoint)
-    if (!response.ok && response.status === 404) {
-      console.log(`⚠️ /api/v1/news/${slug} not found, trying /news/${slug}...`);
-      response = await fetch(
-        `${apiUrl}/news/${slug}?fetch_content=${fetchContent}`,
-        { 
-          cache: 'no-store',
-        }
-      );
-    }
-    
     if (!response.ok) {
       console.error(`❌ Article fetch failed: ${response.status} ${response.statusText}`);
-      console.error(`Tried: ${apiUrl}/api/v1/news/${slug} and ${apiUrl}/news/${slug}`);
+      console.error(`Endpoint: ${apiUrl}/news/${slug}`);
       return null;
     }
     
@@ -171,13 +141,22 @@ export default async function NewsArticlePage({ params }: { params: Promise<{ sl
   return (
     <div className="min-h-screen bg-gradient-to-b from-background via-background to-muted/20">
       <main className="container mx-auto px-4 sm:px-6 lg:px-8 max-w-4xl py-6 sm:py-8 lg:py-12">
-        <article className="space-y-4 sm:space-y-6">
+        {/* Breadcrumb */}
+        <Breadcrumb
+          items={[
+            { label: "News", href: "/" },
+            { label: article.title },
+          ]}
+          className="mb-6"
+        />
+
+        <article className="space-y-6 sm:space-y-8">
           {/* Article Header */}
-          <header className="mb-6 sm:mb-8 space-y-4 sm:space-y-6">
+          <header className="space-y-6">
             <div className="flex flex-wrap items-center gap-4 text-sm">
-              <span className="inline-flex items-center px-3 py-1.5 rounded-full text-xs font-medium bg-primary/10 text-primary border border-primary/20">
+              <Badge variant="secondary" className="bg-primary/10 text-primary border-primary/20">
                 {article.source}
-              </span>
+              </Badge>
               {formattedDate && (
                 <div className="flex items-center gap-2 text-muted-foreground">
                   <Calendar className="h-4 w-4" />
@@ -186,20 +165,34 @@ export default async function NewsArticlePage({ params }: { params: Promise<{ sl
               )}
             </div>
 
-            <h1 className="text-3xl sm:text-4xl md:text-5xl font-bold leading-tight tracking-tight break-words">
+            <h1 className="text-4xl sm:text-5xl md:text-6xl font-bold leading-tight tracking-tight break-words">
               {article.title}
             </h1>
 
+            {article.short_summary && (
+              <p className="text-xl text-muted-foreground leading-relaxed max-w-3xl">
+                {article.short_summary}
+              </p>
+            )}
+
+            {/* Share Buttons */}
+            <ShareButtons
+              title={article.title}
+              url={`/news/${article.slug}`}
+              description={article.short_summary || article.meta_description}
+            />
+
             {article.tags && article.tags.length > 0 && (
-              <div className="flex flex-wrap items-center gap-2 pt-2 sm:pt-3">
+              <div className="flex flex-wrap items-center gap-2 pt-2">
                 <Tag className="h-4 w-4 text-muted-foreground" />
                 {article.tags.map((tag: string) => (
-                  <span
+                  <Badge
                     key={tag}
-                    className="inline-flex items-center px-3 py-1.5 rounded-md text-sm font-medium bg-muted hover:bg-muted/80 text-muted-foreground border border-border/50"
+                    variant="outline"
+                    className="text-xs"
                   >
                     {tag}
-                  </span>
+                  </Badge>
                 ))}
               </div>
             )}

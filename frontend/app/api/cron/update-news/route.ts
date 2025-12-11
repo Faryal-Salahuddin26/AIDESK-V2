@@ -20,7 +20,7 @@ export async function GET(request: Request) {
     // This endpoint can trigger manual updates if needed
     
     // Alternatively, call the backend process endpoint directly
-    const response = await fetch(`${backendUrl}/api/v1/process`, {
+    const response = await fetch(`${backendUrl}/process`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

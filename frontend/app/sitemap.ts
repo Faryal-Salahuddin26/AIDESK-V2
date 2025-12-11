@@ -7,7 +7,7 @@ export default async function sitemap(): Promise<MetadataRoute.Sitemap> {
   try {
     // Get all articles
     const response = await fetch(
-      `${apiUrl}/api/v1/list-news?page=1&limit=1000`,
+      `${apiUrl}/list-news?page=1&limit=1000`,
       { 
         next: { revalidate: 3600 },
         cache: 'force-cache',

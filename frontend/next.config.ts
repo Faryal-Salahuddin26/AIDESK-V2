@@ -34,8 +34,59 @@ const nextConfig: NextConfig = {
         protocol: 'https',
         hostname: '**.ggpht.com', // Google images
       },
+      {
+        protocol: 'https',
+        hostname: 'techcrunch.com', // TechCrunch images
+      },
+      {
+        protocol: 'https',
+        hostname: '**.techcrunch.com', // TechCrunch subdomains
+      },
+      {
+        protocol: 'https',
+        hostname: 'artificialintelligence-news.com', // AI News site
+      },
+      {
+        protocol: 'https',
+        hostname: '**.artificialintelligence-news.com', // AI News subdomains
+      },
+      {
+        protocol: 'https',
+        hostname: 'news.mit.edu', // MIT News
+      },
+      {
+        protocol: 'https',
+        hostname: '**.mit.edu', // MIT subdomains
+      },
+      {
+        protocol: 'https',
+        hostname: 'forbes.com', // Forbes
+      },
+      {
+        protocol: 'https',
+        hostname: '**.forbes.com', // Forbes subdomains
+      },
+      {
+        protocol: 'https',
+        hostname: '**.forbesimg.com', // Forbes images
+      },
+      {
+        protocol: 'https',
+        hostname: '**.wp.com', // WordPress.com hosted images
+      },
+      {
+        protocol: 'https',
+        hostname: '**.wordpress.com', // WordPress.com
+      },
+      {
+        protocol: 'https',
+        hostname: '**.medium.com', // Medium images
+      },
+      {
+        protocol: 'https',
+        hostname: 'cdn-images-*.medium.com', // Medium CDN
+      },
     ],
-    domains: ['i.ytimg.com', 'ytimg.com', 'source.unsplash.com', 'images.unsplash.com'],
     unoptimized: false,
   },
   

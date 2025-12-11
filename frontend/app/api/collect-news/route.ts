@@ -7,7 +7,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { topic, max_articles } = body;
 
-    const response = await fetch(`${API_URL}/api/v1/process`, {
+    const response = await fetch(`${API_URL}/process`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",

@@ -13,7 +13,6 @@
     "isolatedModules": true,
     "jsx": "react-jsx",
     "incremental": true,
-    "types": ["react"],
     "plugins": [
       {
         "name": "next"
@@ -33,4 +32,3 @@
   ],
   "exclude": ["node_modules"]
 }
-

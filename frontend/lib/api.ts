@@ -1,12 +1,11 @@
 const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-const API_V1_PREFIX = "/api/v1";
 
-// Note: In production, these should be server-side API calls
-// For now, using client-side fetch (will need to be updated for production)
+// Note: Backend endpoints don't use /api/v1 prefix
+// All endpoints are directly under the root path
 
 export const api = {
   async collectNews(topic?: string, maxArticles: number = 10) {
-    const response = await fetch(`${API_URL}${API_V1_PREFIX}/collect-news`, {
+    const response = await fetch(`${API_URL}/collect-news`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ topic, max_articles: maxArticles }),
@@ -15,7 +14,7 @@ export const api = {
   },
 
   async generateSummaries(articles: any[]) {
-    const response = await fetch(`${API_URL}${API_V1_PREFIX}/summaries`, {
+    const response = await fetch(`${API_URL}/summaries`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ articles }),
@@ -24,7 +23,7 @@ export const api = {
   },
 
   async generateSEO(title: string, content: string) {
-    const response = await fetch(`${API_URL}${API_V1_PREFIX}/generate-seo`, {
+    const response = await fetch(`${API_URL}/seo`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ title, content }),
@@ -33,23 +32,23 @@ export const api = {
   },
 
   async saveNews(article: any) {
-    const response = await fetch(`${API_URL}${API_V1_PREFIX}/save-news`, {
+    const response = await fetch(`${API_URL}/save-news`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(article),
+      body: JSON.stringify({ article }),
     });
     return response.json();
   },
 
   async listNews(page: number = 1, limit: number = 20) {
     const response = await fetch(
-      `${API_URL}${API_V1_PREFIX}/list-news?page=${page}&limit=${limit}`
+      `${API_URL}/list-news?page=${page}&limit=${limit}`
     );
     return response.json();
   },
 
   async getNewsBySlug(slug: string) {
-    const response = await fetch(`${API_URL}${API_V1_PREFIX}/news/${slug}`);
+    const response = await fetch(`${API_URL}/news/${slug}`);
     if (!response.ok) return null;
     return response.json();
   },

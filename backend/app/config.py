@@ -17,12 +17,18 @@ class Settings(BaseSettings):
     
     # Optional API Keys for Enhanced Data Collection
     YOUTUBE_API_KEY: Optional[str] = None
+    BING_SEARCH_API_KEY: Optional[str] = None
     GOOGLE_SEARCH_API_KEY: Optional[str] = None
     GOOGLE_SEARCH_ENGINE_ID: Optional[str] = None
     SERPAPI_KEY: Optional[str] = None
     
-    # Database Configuration (Optional)
-    DATABASE_URL: Optional[str] = None
+    # Database Configuration
+    DATABASE_URL: str = "sqlite:///./aidesk.db"
+    
+    # JWT Configuration
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "your-secret-key-change-in-production-use-env-var")
+    ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
     # Storage Configuration
     # Default to storage/news-data relative to project root
@@ -30,7 +36,7 @@ class Settings(BaseSettings):
     
     # Scheduler Configuration
     SCHEDULER_ENABLED: bool = True
-    SCHEDULER_INTERVAL: int = 900  # 15 minutes in seconds (default) - like CoinDesk updates frequently
+    SCHEDULER_INTERVAL: int = 600  # 10 minutes in seconds (default) - runs master pipeline
     
     # CORS Configuration
     # Can be set via environment variable as comma-separated string

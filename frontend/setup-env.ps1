@@ -20,7 +20,7 @@ Write-Host ""
 Write-Host "✅ Setup complete!" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next steps:" -ForegroundColor Cyan
-Write-Host "1. Make sure backend is running: cd ..\backend && uvicorn app.main:app --reload --port 8000"
+Write-Host "1. Make sure backend is running: cd ..\backend && uvicorn main:app --reload --port 8000"
 Write-Host "2. Restart frontend: npm run dev"
 Write-Host "3. Visit http://localhost:3000"
 
